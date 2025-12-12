@@ -1,0 +1,12 @@
+{
+  "domain": "social_schools_connect",
+  "name": "Social Schools Connect",
+  "version": "0.1.0",
+  "documentation": "https://app.socialschools.eu",
+  "requirements": ["beautifulsoup4==4.14.3"],
+  "codeowners": [],
+  "config_flow": true,
+  "integration_type": "service",
+  "iot_class": "cloud_polling",
+  "loggers": ["custom_components.social_schools_connect"]
+}

@@ -7,18 +7,11 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api import LoginError, SocialSchoolsClient, TokenError
-from .const import (
-    CONF_DISPLAY_NAME,
-    CONF_PASSWORD,
-    CONF_REFRESH_TOKEN,
-    CONF_USER_ID,
-    CONF_USERNAME,
-    DOMAIN,
-)
+from .api import AuthError, LoginError, SocialSchoolsClient, TokenError
+from .const import CONF_PASSWORD, CONF_REFRESH_TOKEN, CONF_USERNAME, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -28,6 +21,10 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     MINOR_VERSION = 1
+
+    def __init__(self) -> None:
+        """Initialize the config flow."""
+        self._reauth_entry: ConfigEntry | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -45,7 +42,7 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 user = await client.async_get_current_user()
-            except LoginError:
+            except (AuthError, LoginError):
                 _LOGGER.debug("Login failed")
                 errors["base"] = "invalid_auth"
             except TokenError:
@@ -70,23 +67,16 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(str(user_id))
                 self._abort_if_unique_id_configured()
 
-                entry_data: dict[str, str] = {
-                    CONF_USER_ID: str(user_id),
-                    CONF_DISPLAY_NAME: display_name,
-                }
-
-                # Ideaal: alleen refresh_token bewaren
-                if client.refresh_token:
-                    entry_data[CONF_REFRESH_TOKEN] = client.refresh_token
+                refresh_token = client.refresh_token
+                if not refresh_token:
+                    errors["base"] = "unknown"
                 else:
-                    # Fallback: credentials bewaren
-                    entry_data[CONF_USERNAME] = user_input[CONF_USERNAME]
-                    entry_data[CONF_PASSWORD] = user_input[CONF_PASSWORD]
+                    entry_data: dict[str, str] = {CONF_REFRESH_TOKEN: refresh_token}
 
-                return self.async_create_entry(
-                    title=display_name,
-                    data=entry_data,
-                )
+                    return self.async_create_entry(
+                        title=display_name,
+                        data=entry_data,
+                    )
 
         data_schema = vol.Schema(
             {
@@ -97,6 +87,79 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user",
+            data_schema=data_schema,
+            errors=errors,
+        )
+
+    async def async_step_reauth(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle a reauthentication request."""
+        entry_id = self.context.get("entry_id")
+        if entry_id is None:
+            return self.async_abort(reason="unknown_entry")
+        if not (entry := self.hass.config_entries.async_get_entry(entry_id)):
+            return self.async_abort(reason="unknown_entry")
+
+        self._reauth_entry = entry
+        return await self.async_step_reauth_confirm(user_input)
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm reauth to refresh stored tokens."""
+        assert self._reauth_entry is not None
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            session = async_get_clientsession(self.hass)
+            client = SocialSchoolsClient(
+                session,
+                username=user_input[CONF_USERNAME],
+                password=user_input[CONF_PASSWORD],
+            )
+
+            try:
+                user = await client.async_get_current_user()
+            except (AuthError, LoginError):
+                _LOGGER.debug("Login failed")
+                errors["base"] = "invalid_auth"
+            except TokenError:
+                _LOGGER.debug("Token error during login")
+                errors["base"] = "cannot_connect"
+            except Exception:  # safety net
+                _LOGGER.exception("Unexpected error during login")
+                errors["base"] = "unknown"
+            else:
+                user_id = (
+                    user.get("userProfileId")
+                    or user.get("username")
+                    or user_input[CONF_USERNAME]
+                )
+                if (
+                    self._reauth_entry.unique_id
+                    and str(user_id) != self._reauth_entry.unique_id
+                ):
+                    return self.async_abort(reason="wrong_account")
+
+                refresh_token = client.refresh_token
+                if not refresh_token:
+                    errors["base"] = "unknown"
+                else:
+                    return self.async_update_reload_and_abort(
+                        self._reauth_entry,
+                        data_updates={CONF_REFRESH_TOKEN: refresh_token},
+                    )
+
+        data_schema = vol.Schema(
+            {
+                vol.Required(CONF_USERNAME): str,
+                vol.Required(CONF_PASSWORD): str,
+            }
+        )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
             data_schema=data_schema,
             errors=errors,
         )

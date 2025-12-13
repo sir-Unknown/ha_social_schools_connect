@@ -10,12 +10,16 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SocialSchoolsClient
-from .const import CONF_PASSWORD, CONF_REFRESH_TOKEN, CONF_USERNAME, DOMAIN
+from .const import CONF_PASSWORD, CONF_REFRESH_TOKEN, CONF_USERNAME
 
 PLATFORMS: Final[list[Platform]] = [Platform.SENSOR]
 
+type SocialSchoolsConfigEntry = ConfigEntry[SocialSchoolsClient]
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: SocialSchoolsConfigEntry
+) -> bool:
     """Set up Social Schools Connect from a config entry."""
 
     session = async_get_clientsession(hass)
@@ -28,15 +32,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         refresh_token=data.get(CONF_REFRESH_TOKEN),
     )
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = client
+    entry.runtime_data = client
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(
+    hass: HomeAssistant, entry: SocialSchoolsConfigEntry
+) -> bool:
     """Unload a config entry."""
-    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unload_ok and DOMAIN in hass.data:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

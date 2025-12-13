@@ -6,12 +6,11 @@ import asyncio
 import base64
 from dataclasses import dataclass
 import hashlib
-import logging
 import secrets
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
-from aiohttp import ClientSession
+from aiohttp import ClientError, ClientSession
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
@@ -26,8 +25,6 @@ from .const import (
     TOKEN_ENDPOINT,
 )
 
-_LOGGER = logging.getLogger(__name__)
-
 
 class LoginError(Exception):
     """Error during login."""
@@ -37,12 +34,17 @@ class TokenError(Exception):
     """Error during token handling."""
 
 
+class AuthError(TokenError):
+    """Error while authenticating with Social Schools."""
+
+
 def _pkce_challenge(verifier: str) -> str:
+    """Return the PKCE challenge derived from a verifier."""
     digest = hashlib.sha256(verifier.encode("ascii")).digest()
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
-@dataclass
+@dataclass(slots=True)
 class Tokens:
     """OAuth2 tokens returned by the login flow."""
 
@@ -83,6 +85,7 @@ class SocialSchoolsClient:
         self._username = username
         self._password = password
 
+        self._token_lock = asyncio.Lock()
         self._access_token: str | None = None
         self._refresh_token: str | None = refresh_token
         self._expires_at: float = 0.0
@@ -96,19 +99,41 @@ class SocialSchoolsClient:
         """Return the refresh token, if available."""
         return self._refresh_token
 
-    async def _async_login_with_credentials(self) -> Tokens:
-        """Perform full OAuth2 + PKCE login with username/password."""
+    async def _async_post_tokens(self, data: dict[str, str]) -> Tokens:
+        """Call the token endpoint and return parsed tokens."""
+        try:
+            async with self._session.post(
+                TOKEN_ENDPOINT,
+                data=data,
+                headers={"Accept": "application/json"},
+            ) as resp:
+                if resp.status != 200:
+                    if resp.status in (400, 401):
+                        raise AuthError(f"Token endpoint returned {resp.status}")
+                    raise TokenError(f"Token endpoint returned {resp.status}")
+                payload = await resp.json()
+        except ClientError as err:
+            raise TokenError("Error communicating with token endpoint") from err
 
+        access_token = payload["access_token"]
+        refresh_token = payload.get("refresh_token")
+        expires_in = int(payload.get("expires_in", 3600))
+        return Tokens(
+            access_token=access_token,
+            refresh_token=refresh_token,
+            expires_in=expires_in,
+        )
+
+    async def _async_login_with_credentials(self) -> Tokens:
+        """Perform a full OAuth2 + PKCE login with username and password."""
         if not self._username or not self._password:
             raise LoginError("Missing username/password for login")
-
-        loop = asyncio.get_running_loop()
 
         code_verifier = secrets.token_urlsafe(64)
         code_challenge = _pkce_challenge(code_verifier)
         state = secrets.token_urlsafe(16)
 
-        # Dit ReturnUrl bouwen we zelf, net zoals de webapp doet
+        # Build ReturnUrl as the web app does.
         auth_query = urlencode(
             {
                 "client_id": CLIENT_ID,
@@ -127,33 +152,27 @@ class SocialSchoolsClient:
 
         login_params = {"ReturnUrl": return_url}
 
-        _LOGGER.debug("Loading Account/Login with ReturnUrl=%s", return_url)
-
-        # 1. Haal de echte loginpagina op (met hidden __RequestVerificationToken)
-        resp = await self._session.get(
-            f"{OAUTH_BASE}/Account/Login",
-            params=login_params,
-            headers=BROWSER_HEADERS,
-            allow_redirects=True,
-        )
-        html = await resp.text()
-        _LOGGER.debug(
-            "Login page status: %s, url after redirects: %s",
-            resp.status,
-            resp.url,
-        )
-
-        if resp.status != 200:
-            raise LoginError(f"Failed to load login page: {resp.status}")
+        # 1. Fetch the login page with the CSRF token.
+        try:
+            async with self._session.get(
+                f"{OAUTH_BASE}/Account/Login",
+                params=login_params,
+                headers=BROWSER_HEADERS,
+                allow_redirects=True,
+            ) as resp:
+                if resp.status != 200:
+                    raise LoginError(f"Failed to load login page: {resp.status}")
+                html = await resp.text()
+        except ClientError as err:
+            raise LoginError("Error loading the login page") from err
 
         soup = BeautifulSoup(html, "html.parser")
         token_el = soup.find("input", {"name": "__RequestVerificationToken"})
         csrf_token = token_el.get("value") if isinstance(token_el, Tag) else None
         if not csrf_token:
-            _LOGGER.debug("Login page HTML (trimmed): %s", html[:2000])
             raise LoginError("Could not find csrf token in login page")
 
-        # 2. POST username/password + token
+        # 2. Post username and password with the CSRF token.
         data = {
             "ReturnUrl": return_url,
             "Username": self._username,
@@ -162,17 +181,17 @@ class SocialSchoolsClient:
             "__RequestVerificationToken": csrf_token,
         }
 
-        _LOGGER.debug("Posting login form to %s/Account/Login", OAUTH_BASE)
-
-        resp2 = await self._session.post(
-            f"{OAUTH_BASE}/Account/Login",
-            params=login_params,
-            data=data,
-            headers=BROWSER_HEADERS,
-            allow_redirects=True,
-        )
-        final_url = str(resp2.url)
-        _LOGGER.debug("After login, final URL: %s, status: %s", final_url, resp2.status)
+        try:
+            async with self._session.post(
+                f"{OAUTH_BASE}/Account/Login",
+                params=login_params,
+                data=data,
+                headers=BROWSER_HEADERS,
+                allow_redirects=True,
+            ) as resp2:
+                final_url = str(resp2.url)
+        except ClientError as err:
+            raise LoginError("Error posting the login form") from err
 
         qs = parse_qs(urlsplit(final_url).query)
         code_list = qs.get("code")
@@ -182,8 +201,6 @@ class SocialSchoolsClient:
         returned_state = returned_state_list[0] if returned_state_list else None
 
         if not code:
-            html2 = await resp2.text()
-            _LOGGER.debug("No code in redirect; final HTML (trimmed): %s", html2[:2000])
             raise LoginError(
                 "No authorization code found in redirect URL (bad credentials or flow)"
             )
@@ -191,7 +208,7 @@ class SocialSchoolsClient:
         if returned_state != state:
             raise LoginError("State mismatch during login")
 
-        # 3. Code → tokens
+        # 3. Exchange code for tokens.
         token_data = {
             "grant_type": "authorization_code",
             "redirect_uri": REDIRECT_URI,
@@ -200,44 +217,16 @@ class SocialSchoolsClient:
             "client_id": CLIENT_ID,
         }
 
-        _LOGGER.debug("Exchanging code for tokens at %s", TOKEN_ENDPOINT)
-
-        resp3 = await self._session.post(
-            TOKEN_ENDPOINT,
-            data=token_data,
-            headers={"Accept": "application/json"},
-        )
-        body = await resp3.text()
-        _LOGGER.debug(
-            "Token endpoint status: %s, body (trimmed): %s",
-            resp3.status,
-            body[:2000],
-        )
-
-        if resp3.status != 200:
-            raise TokenError(f"Token exchange failed: {resp3.status} {body}")
-
-        payload = await resp3.json()
-        access_token = payload["access_token"]
-        refresh_token = payload.get("refresh_token")
-        expires_in = int(payload.get("expires_in", 3600))
-
-        self._access_token = access_token
-        self._refresh_token = refresh_token
-        self._expires_at = loop.time() + expires_in - 30
-
-        return Tokens(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=expires_in,
-        )
+        tokens = await self._async_post_tokens(token_data)
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token
+        self._expires_at = asyncio.get_running_loop().time() + tokens.expires_in - 30
+        return tokens
 
     async def _async_refresh(self) -> Tokens:
         """Refresh access token using refresh_token."""
         if not self._refresh_token:
-            raise TokenError("No refresh_token available")
-
-        loop = asyncio.get_running_loop()
+            raise AuthError("No refresh token available")
 
         data = {
             "grant_type": "refresh_token",
@@ -245,34 +234,14 @@ class SocialSchoolsClient:
             "client_id": CLIENT_ID,
         }
 
-        _LOGGER.debug("Refreshing token at %s", TOKEN_ENDPOINT)
-
-        resp = await self._session.post(
-            TOKEN_ENDPOINT,
-            data=data,
-            headers={"Accept": "application/json"},
-        )
-        body = await resp.text()
-        _LOGGER.debug(
-            "Refresh response status: %s, body (trimmed): %s", resp.status, body[:2000]
-        )
-
-        if resp.status != 200:
-            raise TokenError(f"Refresh failed: {resp.status} {body}")
-
-        payload = await resp.json()
-        access_token = payload["access_token"]
-        refresh_token = payload.get("refresh_token", self._refresh_token)
-        expires_in = int(payload.get("expires_in", 3600))
-
-        self._access_token = access_token
-        self._refresh_token = refresh_token
-        self._expires_at = loop.time() + expires_in - 30
-
+        tokens = await self._async_post_tokens(data)
+        self._access_token = tokens.access_token
+        self._refresh_token = tokens.refresh_token or self._refresh_token
+        self._expires_at = asyncio.get_running_loop().time() + tokens.expires_in - 30
         return Tokens(
-            access_token=access_token,
-            refresh_token=refresh_token,
-            expires_in=expires_in,
+            access_token=tokens.access_token,
+            refresh_token=self._refresh_token,
+            expires_in=tokens.expires_in,
         )
 
     async def _ensure_token(self) -> None:
@@ -282,44 +251,62 @@ class SocialSchoolsClient:
         if self._access_token and loop.time() < self._expires_at:
             return
 
-        if self._refresh_token:
-            try:
-                await self._async_refresh()
-            except TokenError as err:
-                _LOGGER.warning("Refresh failed, will try full login: %s", err)
-                self._access_token = None
-            else:
+        async with self._token_lock:
+            loop = asyncio.get_running_loop()
+            if self._access_token and loop.time() < self._expires_at:
                 return
 
-        if not self._username or not self._password:
-            raise LoginError("No credentials available for full login")
+            if self._refresh_token:
+                try:
+                    await self._async_refresh()
+                except AuthError:
+                    self._access_token = None
+                    self._expires_at = 0.0
+                else:
+                    return
 
-        await self._async_login_with_credentials()
+            if not self._username or not self._password:
+                raise AuthError("No credentials available for login")
 
-    async def async_get(self, path: str) -> Any:
-        """GET against Social Schools API with auth."""
+            await self._async_login_with_credentials()
+
+    async def _async_get_json(
+        self,
+        path: str,
+        *,
+        headers: dict[str, str] | None = None,
+        params: dict[str, str] | None = None,
+    ) -> Any:
+        """Perform an authenticated GET request against the Social Schools API."""
         await self._ensure_token()
-
         assert self._access_token is not None
 
-        headers = {
+        request_headers = {
             "Authorization": f"Bearer {self._access_token}",
             "Accept": "application/json",
         }
+        if headers:
+            request_headers.update(headers)
 
         url = f"{API_BASE}{path}"
-        _LOGGER.debug("GET %s", url)
+        try:
+            async with self._session.get(
+                url, headers=request_headers, params=params
+            ) as resp:
+                if resp.status in (401, 403):
+                    raise AuthError(f"API returned {resp.status}")
+                if resp.status != 200:
+                    raise TokenError(f"API returned {resp.status}")
+                return await resp.json()
+        except ClientError as err:
+            raise TokenError("Error communicating with the Social Schools API") from err
 
-        resp = await self._session.get(url, headers=headers)
-        text = await resp.text()
-        _LOGGER.debug("API response %s: %s", resp.status, text[:2000])
-
-        if resp.status != 200:
-            raise TokenError(f"API GET {path} failed: {resp.status} {text}")
-        return await resp.json()
+    async def async_get(self, path: str) -> Any:
+        """Perform an authenticated GET request."""
+        return await self._async_get_json(path)
 
     async def async_get_current_user(self) -> dict[str, Any]:
-        """Get /api/v1/useraccounts/current en cache rol/school."""
+        """Fetch the current user and cache the main role/school identifiers."""
         data = await self.async_get(CURRENT_USER_PATH)
         self._current_user = data
 
@@ -348,32 +335,16 @@ class SocialSchoolsClient:
         limit: int = 10,
         filter_type: int = 0,
     ) -> dict[str, Any]:
-        """Ruwe call naar /communityposts met meegegeven rol/school."""
-        await self._ensure_token()
-        assert self._access_token is not None
-
-        headers = {
-            "Authorization": f"Bearer {self._access_token}",
-            "Accept": "application/json",
-            "roletypeid": str(role_type_id),
-            "schoolid": str(school_id),
-        }
+        """Fetch posts from the community endpoint."""
+        headers = {"roletypeid": str(role_type_id), "schoolid": str(school_id)}
         params = {
             "offset": str(offset),
             "limit": str(limit),
             "filterType": str(filter_type),
         }
-
-        url = f"{API_BASE}{COMMUNITY_POSTS_PATH}"
-        _LOGGER.debug("GET %s with params %s", url, params)
-
-        resp = await self._session.get(url, headers=headers, params=params)
-        text = await resp.text()
-        _LOGGER.debug("Posts API response %s: %s", resp.status, text[:2000])
-
-        if resp.status != 200:
-            raise TokenError(f"API GET communityposts failed: {resp.status} {text}")
-        return await resp.json()
+        return await self._async_get_json(
+            COMMUNITY_POSTS_PATH, headers=headers, params=params
+        )
 
     async def async_get_latest_community_posts(
         self,
@@ -381,7 +352,7 @@ class SocialSchoolsClient:
         limit: int = 10,
         filter_type: int = 0,
     ) -> dict[str, Any]:
-        """Handige wrapper: gebruikt de eerste rol + school van de gebruiker."""
+        """Fetch posts using the cached role and school identifiers."""
         if self._role_type_id is None or self._school_id is None:
             await self.async_get_current_user()
 

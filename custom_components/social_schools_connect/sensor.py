@@ -2,81 +2,118 @@
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import dataclass
 from datetime import timedelta
 import logging
 from typing import Any
 
 from homeassistant.components.sensor import SensorEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
+    UpdateFailed,
 )
 
-from .api import SocialSchoolsClient
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from . import SocialSchoolsConfigEntry
+from .api import AuthError, SocialSchoolsClient, TokenError
+from .const import (
+    CONF_PASSWORD,
+    CONF_REFRESH_TOKEN,
+    CONF_USERNAME,
+    DEFAULT_SCAN_INTERVAL,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class SocialSchoolsData:
+    """Coordinator data for Social Schools Connect."""
+
+    user: dict[str, Any]
+    posts: dict[str, Any]
+
+
+class SocialSchoolsCoordinator(DataUpdateCoordinator[SocialSchoolsData]):
+    """Coordinator for Social Schools Connect."""
+
+    def __init__(self, hass: HomeAssistant, entry: SocialSchoolsConfigEntry) -> None:
+        """Initialize the coordinator."""
+        self._entry = entry
+        self._client: SocialSchoolsClient = entry.runtime_data
+        super().__init__(
+            hass,
+            _LOGGER,
+            name="Social Schools Connect",
+            update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
+            config_entry=entry,
+        )
+
+    async def _async_update_data(self) -> SocialSchoolsData:
+        """Fetch the latest data from Social Schools."""
+        try:
+            user, posts = await asyncio.gather(
+                self._client.async_get_current_user(),
+                self._client.async_get_latest_community_posts(
+                    offset=0,
+                    limit=10,
+                    filter_type=0,
+                ),
+            )
+        except AuthError as err:
+            raise ConfigEntryAuthFailed from err
+        except TokenError as err:
+            raise UpdateFailed("Error communicating with Social Schools") from err
+
+        refresh_token = self._client.refresh_token
+        data = dict(self._entry.data)
+        updated = False
+        if refresh_token and data.get(CONF_REFRESH_TOKEN) != refresh_token:
+            data[CONF_REFRESH_TOKEN] = refresh_token
+            updated = True
+        if refresh_token:
+            if data.pop(CONF_USERNAME, None) is not None:
+                updated = True
+            if data.pop(CONF_PASSWORD, None) is not None:
+                updated = True
+        if updated:
+            self.hass.config_entries.async_update_entry(self._entry, data=data)
+
+        return SocialSchoolsData(user=user, posts=posts)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: SocialSchoolsConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Social Schools Connect sensors from a config entry."""
-    client: SocialSchoolsClient = hass.data[DOMAIN][entry.entry_id]
-
-    async def _async_update_user() -> dict[str, Any]:
-        """Fetch the current user details."""
-        return await client.async_get_current_user()
-
-    async def _async_update_posts() -> dict[str, Any]:
-        """Fetch the latest community posts."""
-        return await client.async_get_latest_community_posts(
-            offset=0,
-            limit=10,
-            filter_type=0,
-        )
-
-    user_coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name="Social Schools user",
-        update_method=_async_update_user,
-        update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
-        config_entry=entry,
-    )
-
-    posts_coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name="Social Schools community posts",
-        update_method=_async_update_posts,
-        update_interval=timedelta(seconds=DEFAULT_SCAN_INTERVAL),
-        config_entry=entry,
-    )
-
-    await user_coordinator.async_config_entry_first_refresh()
-    await posts_coordinator.async_config_entry_first_refresh()
+    coordinator = SocialSchoolsCoordinator(hass, entry)
+    await coordinator.async_config_entry_first_refresh()
 
     async_add_entities(
         [
-            SocialSchoolsUserSensor(user_coordinator, entry),
-            SocialSchoolsPostsSensor(posts_coordinator, entry),
+            SocialSchoolsUserSensor(coordinator, entry),
+            SocialSchoolsPostsSensor(coordinator, entry),
         ]
     )
 
 
-class SocialSchoolsUserSensor(CoordinatorEntity, SensorEntity):
+class SocialSchoolsUserSensor(
+    CoordinatorEntity[SocialSchoolsCoordinator], SensorEntity
+):
     """Represent the currently logged-in Social Schools user."""
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:account-school"
 
-    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: SocialSchoolsCoordinator, entry: SocialSchoolsConfigEntry
+    ) -> None:
         """Initialize the user sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_user"
@@ -85,26 +122,30 @@ class SocialSchoolsUserSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the current user display name."""
-        data = self.coordinator.data or {}
+        data = self.coordinator.data.user if self.coordinator.data else {}
         return data.get("displayName") or data.get("username")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional user attributes."""
-        data = self.coordinator.data or {}
+        data = self.coordinator.data.user if self.coordinator.data else {}
         return {
             "email": data.get("email"),
             "roles": data.get("roles"),
         }
 
 
-class SocialSchoolsPostsSensor(CoordinatorEntity, SensorEntity):
+class SocialSchoolsPostsSensor(
+    CoordinatorEntity[SocialSchoolsCoordinator], SensorEntity
+):
     """Represent the latest Social Schools community posts."""
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:message-text"
 
-    def __init__(self, coordinator: DataUpdateCoordinator, entry: ConfigEntry) -> None:
+    def __init__(
+        self, coordinator: SocialSchoolsCoordinator, entry: SocialSchoolsConfigEntry
+    ) -> None:
         """Initialize the posts sensor."""
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_community_posts"
@@ -113,13 +154,13 @@ class SocialSchoolsPostsSensor(CoordinatorEntity, SensorEntity):
     @property
     def native_value(self) -> int | None:
         """Return the total number of posts."""
-        data = self.coordinator.data or {}
+        data = self.coordinator.data.posts if self.coordinator.data else {}
         return data.get("totalCount")
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional details about the latest posts."""
-        data = self.coordinator.data or {}
+        data = self.coordinator.data.posts if self.coordinator.data else {}
         values = data.get("values") or []
 
         attrs: dict[str, Any] = {

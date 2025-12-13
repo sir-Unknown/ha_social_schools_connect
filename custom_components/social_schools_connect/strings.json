@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Social Schools",
+        "description": "Enter your Social Schools username and password.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Reauthenticate",
+        "description": "Enter your username and password to reauthenticate.",
+        "data": {
+          "username": "Username",
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid username or password",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "unknown_entry": "The entry you are trying to reauthenticate was not found",
+      "wrong_account": "This account does not match the configured account"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "user": {
+        "name": "User"
+      },
+      "community_posts": {
+        "name": "Community posts"
+      }
+    }
+  }
+}

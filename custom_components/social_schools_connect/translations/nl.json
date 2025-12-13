@@ -1,0 +1,41 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Verbind met Social Schools",
+        "description": "Vul je Social Schools gebruikersnaam en wachtwoord in.",
+        "data": {
+          "username": "Gebruikersnaam",
+          "password": "Wachtwoord"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Opnieuw authenticeren",
+        "description": "Vul je gebruikersnaam en wachtwoord in om opnieuw te authenticeren.",
+        "data": {
+          "username": "Gebruikersnaam",
+          "password": "Wachtwoord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kan geen verbinding maken",
+      "invalid_auth": "Ongeldige gebruikersnaam of wachtwoord",
+      "unknown": "Onverwachte fout"
+    },
+    "abort": {
+      "unknown_entry": "De configuratie-invoer om opnieuw te authenticeren is niet gevonden",
+      "wrong_account": "Dit account komt niet overeen met het geconfigureerde account"
+    }
+  },
+  "entity": {
+    "sensor": {
+      "user": {
+        "name": "Gebruiker"
+      },
+      "community_posts": {
+        "name": "Community-berichten"
+      }
+    }
+  }
+}

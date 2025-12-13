@@ -11,6 +11,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -25,6 +26,7 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_USERNAME,
     DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -103,21 +105,38 @@ async def async_setup_entry(
     )
 
 
-class SocialSchoolsUserSensor(
-    CoordinatorEntity[SocialSchoolsCoordinator], SensorEntity
-):
-    """Represent the currently logged-in Social Schools user."""
+class SocialSchoolsEntity(CoordinatorEntity[SocialSchoolsCoordinator]):
+    """Base entity for Social Schools Connect."""
 
     _attr_has_entity_name = True
+
+    def __init__(
+        self, coordinator: SocialSchoolsCoordinator, entry: SocialSchoolsConfigEntry
+    ) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        identifier = entry.unique_id or entry.entry_id
+        self._attr_device_info = DeviceInfo(
+            entry_type=DeviceEntryType.SERVICE,
+            identifiers={(DOMAIN, identifier)},
+            manufacturer="Social Schools",
+            name=entry.title,
+        )
+
+
+class SocialSchoolsUserSensor(SocialSchoolsEntity, SensorEntity):
+    """Represent the currently logged-in Social Schools user."""
+
     _attr_icon = "mdi:account-school"
+    _attr_name = None
+    _attr_translation_key = "user"
 
     def __init__(
         self, coordinator: SocialSchoolsCoordinator, entry: SocialSchoolsConfigEntry
     ) -> None:
         """Initialize the user sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_user"
-        self._attr_name = "Social Schools user"
 
     @property
     def native_value(self) -> str | None:
@@ -135,21 +154,19 @@ class SocialSchoolsUserSensor(
         }
 
 
-class SocialSchoolsPostsSensor(
-    CoordinatorEntity[SocialSchoolsCoordinator], SensorEntity
-):
+class SocialSchoolsPostsSensor(SocialSchoolsEntity, SensorEntity):
     """Represent the latest Social Schools community posts."""
 
-    _attr_has_entity_name = True
     _attr_icon = "mdi:message-text"
+    _attr_name = None
+    _attr_translation_key = "community_posts"
 
     def __init__(
         self, coordinator: SocialSchoolsCoordinator, entry: SocialSchoolsConfigEntry
     ) -> None:
         """Initialize the posts sensor."""
-        super().__init__(coordinator)
+        super().__init__(coordinator, entry)
         self._attr_unique_id = f"{entry.entry_id}_community_posts"
-        self._attr_name = "Social Schools posts"
 
     @property
     def native_value(self) -> int | None:

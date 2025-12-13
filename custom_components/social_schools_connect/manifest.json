@@ -1,10 +1,10 @@
 {
   "domain": "social_schools_connect",
-  "name": "Social Schools Connect",
+  "name": "Social Schools",
   "version": "0.1.0",
-  "documentation": "https://app.socialschools.eu",
+  "documentation": "https://github.com/sir-Unknown/ha_social_schools_connect",
   "requirements": ["beautifulsoup4==4.14.3"],
-  "codeowners": [],
+  "codeowners": ["@sir-Unknown"],
   "config_flow": true,
   "integration_type": "service",
   "iot_class": "cloud_polling",

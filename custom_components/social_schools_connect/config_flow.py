@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Self
 
 import voluptuous as vol
 
@@ -21,6 +21,10 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     MINOR_VERSION = 1
+
+    def is_matching(self, other_flow: Self) -> bool:
+        """Return True if other_flow is matching this flow."""
+        return False
 
     def __init__(self) -> None:
         """Initialize the config flow."""
@@ -48,7 +52,7 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
             except TokenError:
                 _LOGGER.debug("Token error during login")
                 errors["base"] = "cannot_connect"
-            except Exception:  # safety net
+            except Exception:  # pylint: disable=broad-except  # safety net
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
             else:
@@ -127,7 +131,7 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
             except TokenError:
                 _LOGGER.debug("Token error during login")
                 errors["base"] = "cannot_connect"
-            except Exception:  # safety net
+            except Exception:  # pylint: disable=broad-except  # safety net
                 _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
             else:
@@ -148,7 +152,7 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
                 else:
                     return self.async_update_reload_and_abort(
                         self._reauth_entry,
-                        data_updates={CONF_REFRESH_TOKEN: refresh_token},
+                        data={CONF_REFRESH_TOKEN: refresh_token},
                     )
 
         data_schema = vol.Schema(

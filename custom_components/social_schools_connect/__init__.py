@@ -1,3 +1,5 @@
+"""The Social Schools Connect integration."""
+
 from __future__ import annotations
 
 from typing import Final
@@ -8,12 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SocialSchoolsClient
-from .const import (
-    CONF_PASSWORD,
-    CONF_REFRESH_TOKEN,
-    CONF_USERNAME,
-    DOMAIN,
-)
+from .const import CONF_PASSWORD, CONF_REFRESH_TOKEN, CONF_USERNAME, DOMAIN
 
 PLATFORMS: Final[list[Platform]] = [Platform.SENSOR]
 

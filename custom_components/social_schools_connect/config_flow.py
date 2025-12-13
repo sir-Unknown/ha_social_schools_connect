@@ -1,11 +1,16 @@
+"""Config flow for the Social Schools Connect integration."""
+
 from __future__ import annotations
 
 import logging
+from typing import Any
+
 import voluptuous as vol
 
-from homeassistant import config_entries
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
+from .api import LoginError, SocialSchoolsClient, TokenError
 from .const import (
     CONF_DISPLAY_NAME,
     CONF_PASSWORD,
@@ -14,15 +19,20 @@ from .const import (
     CONF_USERNAME,
     DOMAIN,
 )
-from .api import SocialSchoolsClient, LoginError, TokenError
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class SocialSchoolsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Social Schools Connect."""
 
-    async def async_step_user(self, user_input=None):
+    VERSION = 1
+    MINOR_VERSION = 1
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle the initial step."""
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -34,22 +44,22 @@ class SocialSchoolsConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
 
             try:
-                _LOGGER.debug("Starting Social Schools login for %s", user_input[CONF_USERNAME])
                 user = await client.async_get_current_user()
-                _LOGGER.debug("Login OK, current user: %s", user)
-            except LoginError as err:
-                _LOGGER.exception("LoginError during Social Schools auth: %s", err)
+            except LoginError:
+                _LOGGER.debug("Login failed")
                 errors["base"] = "invalid_auth"
-            except TokenError as err:
-                _LOGGER.exception("TokenError during Social Schools auth: %s", err)
+            except TokenError:
+                _LOGGER.debug("Token error during login")
                 errors["base"] = "cannot_connect"
-            except Exception as err:  # safety net
-                _LOGGER.exception("Unexpected error during Social Schools auth: %s", err)
+            except Exception:  # safety net
+                _LOGGER.exception("Unexpected error during login")
                 errors["base"] = "unknown"
             else:
-                user_id = user.get("userProfileId") or user.get("username") or user_input[
-                    CONF_USERNAME
-                ]
+                user_id = (
+                    user.get("userProfileId")
+                    or user.get("username")
+                    or user_input[CONF_USERNAME]
+                )
                 display_name = (
                     user.get("displayName")
                     or user.get("username")

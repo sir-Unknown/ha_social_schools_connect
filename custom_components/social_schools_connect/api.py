@@ -1,27 +1,29 @@
+"""API client for the Social Schools Connect integration."""
+
 from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import dataclass
 import hashlib
 import logging
 import secrets
-from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlsplit, parse_qs, urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 from aiohttp import ClientSession
 from bs4 import BeautifulSoup
+from bs4.element import Tag
 
 from .const import (
     API_BASE,
-    AUTHORIZATION_ENDPOINT,
     CLIENT_ID,
+    COMMUNITY_POSTS_PATH,
     CURRENT_USER_PATH,
     OAUTH_BASE,
     REDIRECT_URI,
     SCOPE,
     TOKEN_ENDPOINT,
-    COMMUNITY_POSTS_PATH,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,12 +44,14 @@ def _pkce_challenge(verifier: str) -> str:
 
 @dataclass
 class Tokens:
+    """OAuth2 tokens returned by the login flow."""
+
     access_token: str
     refresh_token: str | None
     expires_in: int
 
 
-# Headers die wat meer op een echte browser lijken
+# Headers that resemble a real browser.
 BROWSER_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -74,6 +78,7 @@ class SocialSchoolsClient:
         password: str | None = None,
         refresh_token: str | None = None,
     ) -> None:
+        """Initialize the client."""
         self._session = session
         self._username = username
         self._password = password
@@ -88,6 +93,7 @@ class SocialSchoolsClient:
 
     @property
     def refresh_token(self) -> str | None:
+        """Return the refresh token, if available."""
         return self._refresh_token
 
     async def _async_login_with_credentials(self) -> Tokens:
@@ -121,9 +127,7 @@ class SocialSchoolsClient:
 
         login_params = {"ReturnUrl": return_url}
 
-        _LOGGER.debug(
-            "Loading Account/Login with ReturnUrl=%s", return_url
-        )
+        _LOGGER.debug("Loading Account/Login with ReturnUrl=%s", return_url)
 
         # 1. Haal de echte loginpagina op (met hidden __RequestVerificationToken)
         resp = await self._session.get(
@@ -144,11 +148,10 @@ class SocialSchoolsClient:
 
         soup = BeautifulSoup(html, "html.parser")
         token_el = soup.find("input", {"name": "__RequestVerificationToken"})
-        if not token_el:
+        csrf_token = token_el.get("value") if isinstance(token_el, Tag) else None
+        if not csrf_token:
             _LOGGER.debug("Login page HTML (trimmed): %s", html[:2000])
             raise LoginError("Could not find csrf token in login page")
-
-        csrf_token = token_el["value"]
 
         # 2. POST username/password + token
         data = {
@@ -169,9 +172,7 @@ class SocialSchoolsClient:
             allow_redirects=True,
         )
         final_url = str(resp2.url)
-        _LOGGER.debug(
-            "After login, final URL: %s, status: %s", final_url, resp2.status
-        )
+        _LOGGER.debug("After login, final URL: %s, status: %s", final_url, resp2.status)
 
         qs = parse_qs(urlsplit(final_url).query)
         code_list = qs.get("code")
@@ -182,9 +183,7 @@ class SocialSchoolsClient:
 
         if not code:
             html2 = await resp2.text()
-            _LOGGER.debug(
-                "No code in redirect; final HTML (trimmed): %s", html2[:2000]
-            )
+            _LOGGER.debug("No code in redirect; final HTML (trimmed): %s", html2[:2000])
             raise LoginError(
                 "No authorization code found in redirect URL (bad credentials or flow)"
             )
@@ -254,7 +253,9 @@ class SocialSchoolsClient:
             headers={"Accept": "application/json"},
         )
         body = await resp.text()
-        _LOGGER.debug("Refresh response status: %s, body (trimmed): %s", resp.status, body[:2000])
+        _LOGGER.debug(
+            "Refresh response status: %s, body (trimmed): %s", resp.status, body[:2000]
+        )
 
         if resp.status != 200:
             raise TokenError(f"Refresh failed: {resp.status} {body}")
@@ -284,10 +285,11 @@ class SocialSchoolsClient:
         if self._refresh_token:
             try:
                 await self._async_refresh()
-                return
             except TokenError as err:
                 _LOGGER.warning("Refresh failed, will try full login: %s", err)
                 self._access_token = None
+            else:
+                return
 
         if not self._username or not self._password:
             raise LoginError("No credentials available for full login")
@@ -324,14 +326,15 @@ class SocialSchoolsClient:
         roles = data.get("roles") or []
         if roles:
             main_role = roles[0]
+            role_type = main_role.get("type")
             try:
-                self._role_type_id = int(main_role.get("type"))
+                self._role_type_id = int(role_type) if role_type is not None else None
             except (TypeError, ValueError):
                 self._role_type_id = None
 
-            school = main_role.get("school") or {}
+            school_id = (main_role.get("school") or {}).get("id")
             try:
-                self._school_id = int(school.get("id"))
+                self._school_id = int(school_id) if school_id is not None else None
             except (TypeError, ValueError):
                 self._school_id = None
 
@@ -383,7 +386,9 @@ class SocialSchoolsClient:
             await self.async_get_current_user()
 
         if self._role_type_id is None or self._school_id is None:
-            raise TokenError("Cannot determine role_type_id and school_id for communityposts")
+            raise TokenError(
+                "Cannot determine role_type_id and school_id for communityposts"
+            )
 
         return await self.async_get_community_posts(
             self._role_type_id,
@@ -392,4 +397,3 @@ class SocialSchoolsClient:
             limit=limit,
             filter_type=filter_type,
         )
-

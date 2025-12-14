@@ -81,4 +81,3 @@ class SocialSchoolsCoordinator(DataUpdateCoordinator[SocialSchoolsData]):
             self.hass.config_entries.async_update_entry(self._entry, data=data)
 
         return SocialSchoolsData(user=user, posts=posts)
-

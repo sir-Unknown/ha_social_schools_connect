@@ -6,16 +6,18 @@ import asyncio
 import base64
 from dataclasses import dataclass
 import hashlib
+import logging
 import secrets
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
-from aiohttp import ClientError, ClientSession
+from aiohttp import ClientError, ClientSession, ContentTypeError
 from bs4 import BeautifulSoup
 from bs4.element import Tag
 
 from .const import (
     API_BASE,
+    AUTHORIZATION_ENDPOINT,
     CLIENT_ID,
     COMMUNITY_POSTS_PATH,
     CURRENT_USER_PATH,
@@ -24,6 +26,8 @@ from .const import (
     SCOPE,
     TOKEN_ENDPOINT,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class LoginError(Exception):
@@ -44,6 +48,63 @@ def _pkce_challenge(verifier: str) -> str:
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
 
+def _safe_url(value: str) -> str:
+    """Return URL without query/fragment for logging."""
+    split = urlsplit(value)
+    return split._replace(query="", fragment="").geturl()
+
+
+def _parse_code_from_url(url: str) -> tuple[str | None, str | None]:
+    """Parse authorization code and state from an URL."""
+    qs = parse_qs(urlsplit(url).query)
+    code_list = qs.get("code")
+    returned_state_list = qs.get("state")
+    return (code_list[0] if code_list else None), (
+        returned_state_list[0] if returned_state_list else None
+    )
+
+
+def _extract_error_text(html: str) -> str | None:
+    """Extract a human-readable error message from HTML, if present."""
+    soup = BeautifulSoup(html, "html.parser")
+
+    for selector in (
+        ".validation-summary-errors",
+        ".validation-summary-valid",
+        ".alert.alert-danger",
+        ".alert-danger",
+        ".error",
+    ):
+        el = soup.select_one(selector)
+        if isinstance(el, Tag):
+            text = " ".join(el.stripped_strings)
+            if text:
+                return text
+
+    title = soup.find("title")
+    if isinstance(title, Tag):
+        title_text = " ".join(title.stripped_strings)
+        if title_text:
+            return title_text
+
+    header = soup.find(["h1", "h2"])
+    if isinstance(header, Tag):
+        header_text = " ".join(header.stripped_strings)
+        if header_text:
+            return header_text
+
+    return None
+
+
+def _absolute_oauth_url(path_or_url: str) -> str:
+    """Return an absolute URL for a relative OAuth path."""
+    if path_or_url.startswith(("http://", "https://")):
+        return path_or_url
+    if path_or_url.startswith("/"):
+        return f"{OAUTH_BASE}{path_or_url}"
+    return f"{OAUTH_BASE}/{path_or_url.lstrip('/')}"
+
+
 @dataclass(slots=True)
 class Tokens:
     """OAuth2 tokens returned by the login flow."""
@@ -53,19 +114,10 @@ class Tokens:
     expires_in: int
 
 
-# Headers that resemble a real browser.
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": (
-        "text/html,application/xhtml+xml,application/xml;q=0.9,"
-        "image/avif,image/webp,image/apng,*/*;q=0.8,"
-        "application/signed-exchange;v=b3;q=0.7"
-    ),
-    "Accept-Language": "nl-NL,nl;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Cache-Control": "no-cache",
+# Minimal headers for the login flow.
+LOGIN_HEADERS = {
+    "User-Agent": "Home Assistant Social Schools Connect",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
 
@@ -108,9 +160,25 @@ class SocialSchoolsClient:
                 headers={"Accept": "application/json"},
             ) as resp:
                 if resp.status != 200:
+                    detail: str | None = None
+                    try:
+                        error_payload = await resp.json(content_type=None)
+                    except (ContentTypeError, TypeError, ValueError):
+                        error_payload = None
+                    if isinstance(error_payload, dict):
+                        detail = error_payload.get("error_description") or error_payload.get(
+                            "error"
+                        )
+
                     if resp.status in (400, 401):
-                        raise AuthError(f"Token endpoint returned {resp.status}")
-                    raise TokenError(f"Token endpoint returned {resp.status}")
+                        raise AuthError(
+                            f"Token endpoint returned {resp.status}"
+                            + (f": {detail}" if detail else "")
+                        )
+                    raise TokenError(
+                        f"Token endpoint returned {resp.status}"
+                        + (f": {detail}" if detail else "")
+                    )
                 payload = await resp.json()
         except ClientError as err:
             raise TokenError("Error communicating with token endpoint") from err
@@ -124,91 +192,16 @@ class SocialSchoolsClient:
             expires_in=expires_in,
         )
 
-    async def _async_login_with_credentials(self) -> Tokens:
-        """Perform a full OAuth2 + PKCE login with username and password."""
-        if not self._username or not self._password:
-            raise LoginError("Missing username/password for login")
+    def _raise_on_home_error(self, url: str, html: str) -> None:
+        """Raise LoginError if the OAuth server returned an error page."""
+        if urlsplit(url).path != "/home/error":
+            return
+        if (error_text := _extract_error_text(html)) is not None:
+            raise LoginError(error_text)
+        raise LoginError("Authorization flow ended at /home/error")
 
-        code_verifier = secrets.token_urlsafe(64)
-        code_challenge = _pkce_challenge(code_verifier)
-        state = secrets.token_urlsafe(16)
-
-        # Build ReturnUrl as the web app does.
-        auth_query = urlencode(
-            {
-                "client_id": CLIENT_ID,
-                "redirect_uri": REDIRECT_URI,
-                "response_type": "code",
-                "scope": SCOPE,
-                "state": state,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-                "response_mode": "query",
-                "prompt": "login",
-                "suppressed_prompt": "login",
-            }
-        )
-        return_url = f"/connect/authorize/callback?{auth_query}"
-
-        login_params = {"ReturnUrl": return_url}
-
-        # 1. Fetch the login page with the CSRF token.
-        try:
-            async with self._session.get(
-                f"{OAUTH_BASE}/Account/Login",
-                params=login_params,
-                headers=BROWSER_HEADERS,
-                allow_redirects=True,
-            ) as resp:
-                if resp.status != 200:
-                    raise LoginError(f"Failed to load login page: {resp.status}")
-                html = await resp.text()
-        except ClientError as err:
-            raise LoginError("Error loading the login page") from err
-
-        soup = BeautifulSoup(html, "html.parser")
-        token_el = soup.find("input", {"name": "__RequestVerificationToken"})
-        csrf_token = token_el.get("value") if isinstance(token_el, Tag) else None
-        if not csrf_token:
-            raise LoginError("Could not find csrf token in login page")
-
-        # 2. Post username and password with the CSRF token.
-        data = {
-            "ReturnUrl": return_url,
-            "Username": self._username,
-            "Password": self._password,
-            "button": "login",
-            "__RequestVerificationToken": csrf_token,
-        }
-
-        try:
-            async with self._session.post(
-                f"{OAUTH_BASE}/Account/Login",
-                params=login_params,
-                data=data,
-                headers=BROWSER_HEADERS,
-                allow_redirects=True,
-            ) as resp2:
-                final_url = str(resp2.url)
-        except ClientError as err:
-            raise LoginError("Error posting the login form") from err
-
-        qs = parse_qs(urlsplit(final_url).query)
-        code_list = qs.get("code")
-        returned_state_list = qs.get("state")
-
-        code = code_list[0] if code_list else None
-        returned_state = returned_state_list[0] if returned_state_list else None
-
-        if not code:
-            raise LoginError(
-                "No authorization code found in redirect URL (bad credentials or flow)"
-            )
-
-        if returned_state != state:
-            raise LoginError("State mismatch during login")
-
-        # 3. Exchange code for tokens.
+    async def _async_exchange_code(self, code: str, code_verifier: str) -> Tokens:
+        """Exchange authorization code for access/refresh token."""
         token_data = {
             "grant_type": "authorization_code",
             "redirect_uri": REDIRECT_URI,
@@ -222,6 +215,233 @@ class SocialSchoolsClient:
         self._refresh_token = tokens.refresh_token
         self._expires_at = asyncio.get_running_loop().time() + tokens.expires_in - 30
         return tokens
+
+    async def _async_start_authorize_flow(
+        self, auth_params: dict[str, str]
+    ) -> tuple[str, str]:
+        """Start authorize flow and return final URL + HTML."""
+        try:
+            async with self._session.get(
+                AUTHORIZATION_ENDPOINT,
+                params=auth_params,
+                headers=LOGIN_HEADERS,
+                allow_redirects=True,
+            ) as resp:
+                if resp.status != 200:
+                    raise LoginError(f"Failed to start authorize flow: {resp.status}")
+
+                final_authorize_url = str(resp.url)
+                if resp.history:
+                    _LOGGER.debug(
+                        "Authorize redirect chain: %s",
+                        " -> ".join(_safe_url(str(h.url)) for h in resp.history),
+                    )
+                html = await resp.text()
+        except ClientError as err:
+            raise LoginError("Error starting authorize flow") from err
+
+        _LOGGER.debug("Authorize flow ended at %s", _safe_url(final_authorize_url))
+        self._raise_on_home_error(final_authorize_url, html)
+        return final_authorize_url, html
+
+    async def _async_submit_login_form(
+        self, login_page_url: str, return_url: str, html: str
+    ) -> tuple[str, str | None]:
+        """Submit the login form and return final URL + optional HTML."""
+        assert self._username is not None
+        assert self._password is not None
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        payload: dict[str, str] = {"ReturnUrl": return_url}
+        action_url = f"{OAUTH_BASE}/Account/Login"
+        login_params: dict[str, str] | None = {"ReturnUrl": return_url}
+
+        form: Tag | None = None
+        for candidate in soup.find_all("form"):
+            if candidate.find("input", {"type": "password"}):
+                form = candidate
+                break
+
+        if form is not None:
+            action = form.get("action")
+            if isinstance(action, str) and action:
+                action_url = _absolute_oauth_url(action)
+
+            # If the form action already contains `ReturnUrl=...`, do not add
+            # another query parameter copy via aiohttp `params=...`.
+            if "ReturnUrl=" in urlsplit(action_url).query:
+                login_params = None
+
+            for input_tag in form.find_all("input"):
+                if not isinstance(input_tag, Tag):
+                    continue
+                name = input_tag.get("name")
+                if not isinstance(name, str) or not name:
+                    continue
+                input_type = input_tag.get("type", "text")
+                value = input_tag.get("value")
+
+                if input_type == "hidden" and isinstance(value, str):
+                    payload.setdefault(name, value)
+
+                if name.lower() == "returnurl":
+                    payload[name] = return_url
+
+                if input_type in ("text", "email") and "username" in name.lower():
+                    payload[name] = self._username
+
+                if input_type == "password" and "password" in name.lower():
+                    payload[name] = self._password
+
+            button = form.find("button", {"name": True, "value": True})
+            if isinstance(button, Tag):
+                button_name = button.get("name")
+                button_value = button.get("value")
+                if isinstance(button_name, str) and isinstance(button_value, str):
+                    payload.setdefault(button_name, button_value)
+
+            submit_input = form.find(
+                "input",
+                {"type": "submit", "name": True, "value": True},
+            )
+            if isinstance(submit_input, Tag):
+                submit_name = submit_input.get("name")
+                submit_value = submit_input.get("value")
+                if isinstance(submit_name, str) and isinstance(submit_value, str):
+                    payload.setdefault(submit_name, submit_value)
+
+        # Fallback for older markup if we did not detect field names.
+        payload.setdefault("Username", self._username)
+        payload.setdefault("Password", self._password)
+        payload.setdefault("button", "login")
+
+        _LOGGER.debug("Submitting login form to %s", _safe_url(action_url))
+
+        try:
+            async with self._session.post(
+                action_url,
+                params=login_params,
+                data=payload,
+                headers={
+                    **LOGIN_HEADERS,
+                    "Referer": login_page_url,
+                },
+                allow_redirects=True,
+            ) as resp2:
+                final_url = str(resp2.url)
+                if resp2.history:
+                    _LOGGER.debug(
+                        "Login redirect chain: %s",
+                        " -> ".join(_safe_url(str(h.url)) for h in resp2.history),
+                    )
+                post_html: str | None = None
+                if "code=" not in final_url:
+                    post_html = await resp2.text()
+        except ClientError as err:
+            raise LoginError("Error posting the login form") from err
+
+        _LOGGER.debug("Login redirect ended at %s", _safe_url(final_url))
+        return final_url, post_html
+
+    async def _async_follow_authorize_callback(
+        self, login_page_url: str, return_url: str
+    ) -> tuple[str, str]:
+        """Follow the authorize callback after login and return final URL + HTML."""
+        try:
+            authorize_callback_url = _absolute_oauth_url(return_url)
+            async with self._session.get(
+                authorize_callback_url,
+                headers={**LOGIN_HEADERS, "Referer": login_page_url},
+                allow_redirects=True,
+            ) as resp3:
+                callback_url = str(resp3.url)
+                if resp3.history:
+                    _LOGGER.debug(
+                        "Authorize callback redirect chain: %s",
+                        " -> ".join(_safe_url(str(h.url)) for h in resp3.history),
+                    )
+                callback_html = await resp3.text()
+        except ClientError as err:
+            raise LoginError("Error following authorize callback after login") from err
+
+        _LOGGER.debug("Authorize callback ended at %s", _safe_url(callback_url))
+        self._raise_on_home_error(callback_url, callback_html)
+        return callback_url, callback_html
+
+    async def _async_login_with_credentials(self) -> Tokens:
+        """Perform a full OAuth2 + PKCE login with username and password."""
+        if not self._username or not self._password:
+            raise LoginError("Missing username/password for login")
+
+        code_verifier = secrets.token_urlsafe(64)
+        code_challenge = _pkce_challenge(code_verifier)
+        state = secrets.token_urlsafe(16)
+
+        # 1. Start the OAuth2 authorize flow (like a browser) and follow redirects
+        # to the login page. This ensures any required cookies / context are set
+        # by the server, instead of constructing a ReturnUrl ourselves.
+        auth_params = {
+            "client_id": CLIENT_ID,
+            "redirect_uri": REDIRECT_URI,
+            "response_type": "code",
+            "scope": SCOPE,
+            "state": state,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+            "response_mode": "query",
+            "prompt": "login",
+            "suppressed_prompt": "login",
+        }
+
+        final_authorize_url, authorize_html = await self._async_start_authorize_flow(
+            auth_params
+        )
+
+        # If the session is already authorized, the flow can land directly on the
+        # redirect_uri and include the authorization code.
+        code, returned_state = _parse_code_from_url(final_authorize_url)
+        if code is not None:
+            if returned_state != state:
+                raise LoginError("State mismatch during login")
+            return await self._async_exchange_code(code, code_verifier)
+
+        # 2. Build login payload based on the discovered form fields.
+        # Social Schools occasionally changes input names, so derive them from HTML.
+        login_page_url = final_authorize_url
+        login_qs = parse_qs(urlsplit(login_page_url).query)
+        return_url = (login_qs.get("ReturnUrl") or [None])[0]
+        if not return_url:
+            raise LoginError("Authorize flow did not provide ReturnUrl for login")
+
+        final_url, post_html = await self._async_submit_login_form(
+            login_page_url, return_url, authorize_html
+        )
+        code, returned_state = _parse_code_from_url(final_url)
+
+        if not code:
+            # Some flows only redirect to the authorize callback after the login
+            # POST has completed (browser navigation). Mimic that by explicitly
+            # performing a GET to the ReturnUrl when needed.
+            callback_url, _callback_html = await self._async_follow_authorize_callback(
+                login_page_url,
+                return_url,
+            )
+            code, returned_state = _parse_code_from_url(callback_url)
+
+            if post_html:
+                if (error_text := _extract_error_text(post_html)) is not None:
+                    _LOGGER.debug("Login error page: %s", error_text)
+                    raise LoginError(error_text)
+            raise LoginError(
+                f"No authorization code found in redirect URL (ended at {_safe_url(final_url)})"
+            )
+
+        if returned_state != state:
+            raise LoginError("State mismatch during login")
+
+        # 3. Exchange code for tokens.
+        return await self._async_exchange_code(code, code_verifier)
 
     async def _async_refresh(self) -> Tokens:
         """Refresh access token using refresh_token."""

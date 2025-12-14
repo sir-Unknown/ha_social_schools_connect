@@ -16,7 +16,7 @@ from .coordinator import SocialSchoolsCoordinator
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,
+    _hass: HomeAssistant,
     entry: SocialSchoolsConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:

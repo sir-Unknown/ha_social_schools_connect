@@ -46,11 +46,11 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 user = await client.async_get_current_user()
-            except (AuthError, LoginError):
-                _LOGGER.debug("Login failed")
+            except (AuthError, LoginError) as err:
+                _LOGGER.debug("Login failed: %s", err)
                 errors["base"] = "invalid_auth"
-            except TokenError:
-                _LOGGER.debug("Token error during login")
+            except TokenError as err:
+                _LOGGER.debug("Token error during login: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:  # pylint: disable=broad-except  # safety net
                 _LOGGER.exception("Unexpected error during login")
@@ -73,6 +73,7 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 refresh_token = client.refresh_token
                 if not refresh_token:
+                    _LOGGER.debug("Login succeeded but no refresh token was returned")
                     errors["base"] = "unknown"
                 else:
                     entry_data: dict[str, str] = {CONF_REFRESH_TOKEN: refresh_token}
@@ -125,11 +126,11 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 user = await client.async_get_current_user()
-            except (AuthError, LoginError):
-                _LOGGER.debug("Login failed")
+            except (AuthError, LoginError) as err:
+                _LOGGER.debug("Login failed: %s", err)
                 errors["base"] = "invalid_auth"
-            except TokenError:
-                _LOGGER.debug("Token error during login")
+            except TokenError as err:
+                _LOGGER.debug("Token error during login: %s", err)
                 errors["base"] = "cannot_connect"
             except Exception:  # pylint: disable=broad-except  # safety net
                 _LOGGER.exception("Unexpected error during login")
@@ -148,6 +149,7 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 refresh_token = client.refresh_token
                 if not refresh_token:
+                    _LOGGER.debug("Login succeeded but no refresh token was returned")
                     errors["base"] = "unknown"
                 else:
                     return self.async_update_reload_and_abort(

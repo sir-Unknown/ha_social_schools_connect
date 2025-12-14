@@ -11,8 +11,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import SocialSchoolsClient
-from .coordinator import SocialSchoolsCoordinator
 from .const import CONF_PASSWORD, CONF_REFRESH_TOKEN, CONF_USERNAME
+from .coordinator import SocialSchoolsCoordinator
 
 PLATFORMS: Final[list[Platform]] = [Platform.SENSOR]
 

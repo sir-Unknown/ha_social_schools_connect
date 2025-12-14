@@ -73,8 +73,10 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 refresh_token = client.refresh_token
                 if not refresh_token:
-                    _LOGGER.debug("Login succeeded but no refresh token was returned")
-                    errors["base"] = "unknown"
+                    _LOGGER.warning(
+                        "Login succeeded but no refresh token was returned; check if the OAuth server allows `offline_access` for this account"
+                    )
+                    errors["base"] = "no_refresh_token"
                 else:
                     entry_data: dict[str, str] = {CONF_REFRESH_TOKEN: refresh_token}
 
@@ -149,8 +151,10 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
                 refresh_token = client.refresh_token
                 if not refresh_token:
-                    _LOGGER.debug("Login succeeded but no refresh token was returned")
-                    errors["base"] = "unknown"
+                    _LOGGER.warning(
+                        "Reauth succeeded but no refresh token was returned; check if the OAuth server allows `offline_access` for this account"
+                    )
+                    errors["base"] = "no_refresh_token"
                 else:
                     return self.async_update_reload_and_abort(
                         self._reauth_entry,

@@ -15,7 +15,8 @@ TOKEN_ENDPOINT = f"{OAUTH_BASE}/connect/token"
 CLIENT_ID = "eu.socialschools.webapp"
 REDIRECT_URI = "https://app.socialschools.eu/callback.html"
 # OAuth scopes requested during login.
-SCOPE = "openid SocsWebApi"
+# `offline_access` is required to receive a refresh token.
+SCOPE = "openid SocsWebApi offline_access"
 
 API_BASE = "https://api.socialschools.eu"
 CURRENT_USER_PATH = "/api/v1/useraccounts/current"

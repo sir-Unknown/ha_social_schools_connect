@@ -183,6 +183,11 @@ class SocialSchoolsClient:
         except ClientError as err:
             raise TokenError("Error communicating with token endpoint") from err
 
+        if isinstance(payload, dict):
+            _LOGGER.debug("Token response keys: %s", sorted(payload))
+            if (scope := payload.get("scope")) is not None:
+                _LOGGER.debug("Token response scope: %s", scope)
+
         access_token = payload["access_token"]
         refresh_token = payload.get("refresh_token")
         expires_in = int(payload.get("expires_in", 3600))
@@ -482,6 +487,7 @@ class SocialSchoolsClient:
                 except AuthError:
                     self._access_token = None
                     self._expires_at = 0.0
+                    self._refresh_token = None
                 else:
                     return
 

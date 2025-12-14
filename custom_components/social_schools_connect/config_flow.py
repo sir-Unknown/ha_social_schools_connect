@@ -74,16 +74,20 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
                 refresh_token = client.refresh_token
                 if not refresh_token:
                     _LOGGER.warning(
-                        "Login succeeded but no refresh token was returned; check if the OAuth server allows `offline_access` for this account"
+                        "Login succeeded but no refresh token was returned; storing credentials so the integration can re-login when needed"
                     )
-                    errors["base"] = "no_refresh_token"
-                else:
-                    entry_data: dict[str, str] = {CONF_REFRESH_TOKEN: refresh_token}
-
                     return self.async_create_entry(
                         title=display_name,
-                        data=entry_data,
+                        data={
+                            CONF_USERNAME: user_input[CONF_USERNAME],
+                            CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        },
                     )
+
+                return self.async_create_entry(
+                    title=display_name,
+                    data={CONF_REFRESH_TOKEN: refresh_token},
+                )
 
         data_schema = vol.Schema(
             {
@@ -152,14 +156,20 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
                 refresh_token = client.refresh_token
                 if not refresh_token:
                     _LOGGER.warning(
-                        "Reauth succeeded but no refresh token was returned; check if the OAuth server allows `offline_access` for this account"
+                        "Reauth succeeded but no refresh token was returned; storing credentials so the integration can re-login when needed"
                     )
-                    errors["base"] = "no_refresh_token"
-                else:
                     return self.async_update_reload_and_abort(
                         self._reauth_entry,
-                        data={CONF_REFRESH_TOKEN: refresh_token},
+                        data_updates={
+                            CONF_USERNAME: user_input[CONF_USERNAME],
+                            CONF_PASSWORD: user_input[CONF_PASSWORD],
+                        },
                     )
+
+                return self.async_update_reload_and_abort(
+                    self._reauth_entry,
+                    data_updates={CONF_REFRESH_TOKEN: refresh_token},
+                )
 
         data_schema = vol.Schema(
             {

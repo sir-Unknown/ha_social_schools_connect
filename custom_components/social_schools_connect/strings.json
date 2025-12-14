@@ -21,7 +21,7 @@
     "error": {
       "cannot_connect": "Failed to connect",
       "invalid_auth": "Invalid username or password",
-      "no_refresh_token": "Login succeeded but no refresh token was returned",
+      "invalid_scope": "Login failed because the server rejected the requested authorization scope",
       "unknown": "Unexpected error"
     },
     "abort": {

@@ -46,9 +46,14 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 user = await client.async_get_current_user()
-            except (AuthError, LoginError) as err:
+            except AuthError as err:
                 _LOGGER.debug("Login failed: %s", err)
                 errors["base"] = "invalid_auth"
+            except LoginError as err:
+                _LOGGER.debug("Login failed: %s", err)
+                errors["base"] = (
+                    "invalid_scope" if "invalid_scope" in str(err).lower() else "invalid_auth"
+                )
             except TokenError as err:
                 _LOGGER.debug("Token error during login: %s", err)
                 errors["base"] = "cannot_connect"
@@ -132,9 +137,14 @@ class SocialSchoolsConfigFlow(ConfigFlow, domain=DOMAIN):
 
             try:
                 user = await client.async_get_current_user()
-            except (AuthError, LoginError) as err:
+            except AuthError as err:
                 _LOGGER.debug("Login failed: %s", err)
                 errors["base"] = "invalid_auth"
+            except LoginError as err:
+                _LOGGER.debug("Login failed: %s", err)
+                errors["base"] = (
+                    "invalid_scope" if "invalid_scope" in str(err).lower() else "invalid_auth"
+                )
             except TokenError as err:
                 _LOGGER.debug("Token error during login: %s", err)
                 errors["base"] = "cannot_connect"

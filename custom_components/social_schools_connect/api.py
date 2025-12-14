@@ -24,6 +24,7 @@ from .const import (
     OAUTH_BASE,
     REDIRECT_URI,
     SCOPE,
+    SCOPE_WITH_OFFLINE_ACCESS,
     TOKEN_ENDPOINT,
 )
 
@@ -379,29 +380,47 @@ class SocialSchoolsClient:
         if not self._username or not self._password:
             raise LoginError("Missing username/password for login")
 
-        code_verifier = secrets.token_urlsafe(64)
-        code_challenge = _pkce_challenge(code_verifier)
-        state = secrets.token_urlsafe(16)
-
         # 1. Start the OAuth2 authorize flow (like a browser) and follow redirects
         # to the login page. This ensures any required cookies / context are set
         # by the server, instead of constructing a ReturnUrl ourselves.
-        auth_params = {
-            "client_id": CLIENT_ID,
-            "redirect_uri": REDIRECT_URI,
-            "response_type": "code",
-            "scope": SCOPE,
-            "state": state,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "response_mode": "query",
-            "prompt": "login",
-            "suppressed_prompt": "login",
-        }
+        #
+        # Some tenants reject `offline_access` with `invalid_scope`. Try it first
+        # to get a refresh token, but fall back to the base scope automatically.
+        for scope in (SCOPE_WITH_OFFLINE_ACCESS, SCOPE):
+            code_verifier = secrets.token_urlsafe(64)
+            code_challenge = _pkce_challenge(code_verifier)
+            state = secrets.token_urlsafe(16)
 
-        final_authorize_url, authorize_html = await self._async_start_authorize_flow(
-            auth_params
-        )
+            auth_params = {
+                "client_id": CLIENT_ID,
+                "redirect_uri": REDIRECT_URI,
+                "response_type": "code",
+                "scope": scope,
+                "state": state,
+                "code_challenge": code_challenge,
+                "code_challenge_method": "S256",
+                "response_mode": "query",
+                "prompt": "login",
+                "suppressed_prompt": "login",
+            }
+
+            try:
+                final_authorize_url, authorize_html = (
+                    await self._async_start_authorize_flow(auth_params)
+                )
+            except LoginError as err:
+                if (
+                    "invalid_scope" in str(err).lower()
+                    and "offline_access" in scope
+                ):
+                    _LOGGER.debug(
+                        "Authorize flow rejected `offline_access`; retrying without it"
+                    )
+                    continue
+                raise
+            break
+        else:
+            raise LoginError("Failed to start authorize flow")
 
         # If the session is already authorized, the flow can land directly on the
         # redirect_uri and include the authorization code.

@@ -21,7 +21,6 @@
     "error": {
       "cannot_connect": "Kan geen verbinding maken",
       "invalid_auth": "Ongeldige gebruikersnaam of wachtwoord",
-      "invalid_scope": "Aanmelden is mislukt omdat de server de gevraagde autorisatiescope weigert",
       "unknown": "Onverwachte fout"
     },
     "abort": {
@@ -30,13 +29,34 @@
     }
   },
   "entity": {
-    "sensor": {
-      "user": {
-        "name": "Gebruiker"
+    "calendar": {
+      "calendar": {
+        "name": "Kalender"
       },
-      "community_posts": {
-        "name": "Community-berichten"
+      "leave_requests": {
+        "name": "Verlofaanvragen"
       }
+    },
+    "image": {
+      "logo": {
+        "name": "Logo"
+      }
+    },
+    "sensor": {
+      "student": { "name": "Leerling" },
+      "student_groups": { "name": "Groepen" },
+      "student_school_year": { "name": "Leerjaar" },
+      "school_name": { "name": "Schoolnaam" },
+      "school_display_name": { "name": "Weergavenaam school" },
+      "school_city": { "name": "Stad" },
+      "school_tag_line": { "name": "Slogan" },
+      "school_period": { "name": "Schoolperiode" },
+      "school_year_start": { "name": "Start schooljaar" },
+      "school_year_end": { "name": "Einde schooljaar" },
+      "notifications_unseen": { "name": "Ongelezen meldingen" },
+      "notifications_new_posts": { "name": "Nieuwe berichten" },
+      "notifications_topics_unseen": { "name": "Ongelezen onderwerpen" },
+      "community_posts_pending": { "name": "Openstaande berichten" }
     }
   }
 }

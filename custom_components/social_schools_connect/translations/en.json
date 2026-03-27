@@ -21,7 +21,6 @@
     "error": {
       "cannot_connect": "Failed to connect",
       "invalid_auth": "Invalid username or password",
-      "invalid_scope": "Login failed because the server rejected the requested authorization scope",
       "unknown": "Unexpected error"
     },
     "abort": {
@@ -30,13 +29,34 @@
     }
   },
   "entity": {
-    "sensor": {
-      "user": {
-        "name": "User"
+    "calendar": {
+      "calendar": {
+        "name": "Calendar"
       },
-      "community_posts": {
-        "name": "Community posts"
+      "leave_requests": {
+        "name": "Leave requests"
       }
+    },
+    "image": {
+      "logo": {
+        "name": "Logo"
+      }
+    },
+    "sensor": {
+      "student": { "name": "Student" },
+      "student_groups": { "name": "Groups" },
+      "student_school_year": { "name": "Student year" },
+      "school_name": { "name": "School name" },
+      "school_display_name": { "name": "School display name" },
+      "school_city": { "name": "City" },
+      "school_tag_line": { "name": "Tag line" },
+      "school_period": { "name": "School period" },
+      "school_year_start": { "name": "School year start" },
+      "school_year_end": { "name": "School year end" },
+      "notifications_unseen": { "name": "Unseen notifications" },
+      "notifications_new_posts": { "name": "New posts" },
+      "notifications_topics_unseen": { "name": "Unseen topics" },
+      "community_posts_pending": { "name": "Pending community posts" }
     }
   }
 }

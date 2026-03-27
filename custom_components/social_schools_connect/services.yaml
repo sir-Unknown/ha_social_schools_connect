@@ -1,0 +1,52 @@
+get_posts:
+  name: Get posts
+  description: "Retrieve posts in one of three modes: latest, search, or single post."
+  fields:
+    mode:
+      name: Mode
+      description: "Fetch mode: 'latest' returns the most recent posts, 'search' finds posts by keyword, 'post' retrieves a single post by ID."
+      required: true
+      selector:
+        select:
+          options:
+            - latest
+            - search
+            - post
+    post_id:
+      name: Post ID
+      description: "ID of the post to retrieve. Required when mode is 'post'."
+      required: false
+      selector:
+        number:
+          min: 1
+          mode: box
+    search_query:
+      name: Search query
+      description: "Keyword or phrase to search for. Required when mode is 'search'."
+      required: false
+      selector:
+        text:
+    community_id:
+      name: Community ID
+      description: "Limit results to a specific community. Optional for 'latest' and 'search' modes."
+      required: false
+      selector:
+        number:
+          min: 1
+          mode: box
+    limit:
+      name: Result limit
+      description: "Maximum number of posts to return (1-10). Only applies to 'latest' mode."
+      required: false
+      default: 10
+      selector:
+        number:
+          min: 1
+          max: 10
+          mode: box
+    include_media:
+      name: Include media
+      description: "When enabled, each post includes metadata for attached images, videos, and documents."
+      default: false
+      selector:
+        boolean:
